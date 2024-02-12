@@ -1,0 +1,695 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "id": "2ad23c23-3cb6-4639-b44a-d9de7d7f9bc7",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import matplotlib.pyplot as plt\n",
+    "import cv2\n",
+    "import numpy as np\n",
+    "from IPython.display import display, Image\n",
+    "import ipywidgets as widgets\n",
+    "from ipywidgets import interact, Layout\n",
+    "import threading\n",
+    "import cvzone\n",
+    "import time\n",
+    "from sklearn.model_selection import train_test_split\n",
+    "import pickle"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "id": "6ebaf720-1862-4e52-b6f4-7ba6c9157ded",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "target_dict = {\n",
+    "    'Karta Polaka (FRONT)': 0,\n",
+    "    'Karta Polaka (BACK)': 1,\n",
+    "    'Driver License (FRONT)': 2,\n",
+    "    'Driver License (BACK)': 3,\n",
+    "              }"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "id": "e3b0a244-e207-4adc-a592-32f67f8a89f7",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "with open('model_0.pkl', 'rb') as file:  \n",
+    "    clf3 = pickle.load(file)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "id": "83ee891e-7721-4163-b2be-b85633f6db15",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "51c9e088988b4680853f3b41d6acfab6",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "ToggleButton(value=False, description='Stop')"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "fae55f85c5004185b76c602b84792850",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "IntRangeSlider(value=(30, 255), description='Canny_threshold', layout=Layout(width='80%'), max=255)"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "data": {
+      "text/plain": [
+       "None"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "font = cv2.FONT_HERSHEY_SIMPLEX\n",
+    "\n",
+    "# width_img = 640\n",
+    "# height_img = 480\n",
+    "width_img = 1280\n",
+    "height_img = 960\n",
+    "\n",
+    "stopButton = widgets.ToggleButton(description='Stop', disabled=False)\n",
+    "\n",
+    "val1 = widgets.IntRangeSlider(min=0, max=255, step=1, value=[30, 255], layout=Layout(width='80%'), description='Canny_threshold')\n",
+    "val2 = widgets.IntRangeSlider(min=0, max=255, step=1, value=[180, 255], layout=Layout(width='80%'))\n",
+    "val3 = widgets.RadioButtons(options=[True, False], description='L2Gradient', disabled=False)\n",
+    "\n",
+    "b1 = [0,255,150,255,0,255]\n",
+    "a = b1.copy()\n",
+    "hue = widgets.IntRangeSlider(min=0, max=255, step=1, value=[a[0], a[1]], layout=Layout(width='80%'), description='hue')\n",
+    "sat = widgets.IntRangeSlider(min=0, max=255, step=1, value=[a[2], a[3]], layout=Layout(width='80%'), description='sat')\n",
+    "val = widgets.IntRangeSlider(min=0, max=255, step=1, value=[a[4], a[5]], layout=Layout(width='80%'), description='val')\n",
+    "\n",
+    "def preprocess(fr, v1):\n",
+    "    mask = cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY)\n",
+    "    mask = cv2.GaussianBlur(mask, (5,5), 2)\n",
+    "    mask = cv2.Canny(mask, v1.value[0], v1.value[1], apertureSize=5)\n",
+    "\t# mask = cv2.dilate(mask, np.ones((5,5)), iterations=2)\n",
+    "    # mask = cv2.erode(mask, np.ones((5,5)), iterations=1)\n",
+    "    return mask\n",
+    "\n",
+    "def contours(fr_m, fr):\n",
+    "    biggest = np.array([])\n",
+    "    max_area = 0\n",
+    "    contours, hierarchy = cv2.findContours(fr_m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)\n",
+    "    for cnt in contours:\n",
+    "        area = cv2.contourArea(cnt)\n",
+    "        if area > 100_000:\n",
+    "            epsilon = 0.1 * cv2.arcLength(cnt, True)\n",
+    "            # approx = cv2.convexHull(cnt)\n",
+    "            approx = cv2.approxPolyDP(cnt, epsilon, True)\n",
+    "            cv2.drawContours(fr, cnt, -1, (0,255,0), 5)\n",
+    "            if area > max_area and len(approx) == 4:\n",
+    "                biggest = approx\n",
+    "                max_area = area\n",
+    "    # cv2.drawContours(fr, biggest, -1, (0,255,0), 30)\n",
+    "    return biggest\n",
+    "\n",
+    "def reorder(my_points):\n",
+    "    my_points = my_points.reshape((4,2))\n",
+    "    my_points_new = np.zeros((4,1,2), np.int32)\n",
+    "    add = my_points.sum(1)\n",
+    "\n",
+    "    my_points_new[0] = my_points[np.argmin(add)]\n",
+    "    my_points_new[3] = my_points[np.argmax(add)]\n",
+    "\n",
+    "    diff = np.diff(my_points, axis=1)\n",
+    "\n",
+    "    my_points_new[1] = my_points[np.argmin(diff)]\n",
+    "    my_points_new[2] = my_points[np.argmax(diff)]\n",
+    "\n",
+    "    return my_points_new\n",
+    "\n",
+    "def get_warp(img, approx):\n",
+    "    biggest = reorder(approx)\n",
+    "\n",
+    "    pts1 = np.float32(biggest)\n",
+    "    pts2 = np.float32([[0, 0], [width_img, 0], [0, height_img], [width_img, height_img]])\n",
+    "    matrix = cv2.getPerspectiveTransform(pts1, pts2)\n",
+    "    img_output = cv2.warpPerspective(img, matrix, (width_img, height_img))\n",
+    "\n",
+    "    # img_cropped = img_output[20:img_output.shape[0]-20, 20:img_output.shape[1]-20]\n",
+    "    img_cropped = cv2.resize(img_output, (width_img, height_img))\n",
+    "    # cv2.putText(img_cropped, str(int(fps)), (7, 70), font, 3, (255, 0, 0), 3, cv2.LINE_AA)\n",
+    "    return img_cropped\n",
+    "\n",
+    "# MSER TRAIN\n",
+    "# def text_detection(fr, img):\n",
+    "#     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)\n",
+    "#     mser = cv2.MSER_create()\n",
+    "#     regions, _ = mser.detectRegions(gray)\n",
+    "    \n",
+    "#     tensor = np.empty((1,4))\n",
+    "#     for region in regions:\n",
+    "#         x, y, w, h = cv2.boundingRect(region)\n",
+    "#         area = cv2.contourArea(region)\n",
+    "#         if area > 1500:\n",
+    "#             cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)\n",
+    "#             tensor = np.append(tensor, [[x, y, w, h]], axis=0)\n",
+    "#     if len(l) < 2010:   \n",
+    "#         l.append((tensor[1:,:].astype(int), 'Karta Polaka (BACK)'))\n",
+    "#     else:\n",
+    "#         print(len(l))\n",
+    "\n",
+    "# MSER CHECK\n",
+    "# def text_detection(fr, img):\n",
+    "#     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)\n",
+    "#     mser = cv2.MSER_create()\n",
+    "#     regions, _ = mser.detectRegions(gray)\n",
+    "    \n",
+    "#     tmp = np.empty((1,4))\n",
+    "#     for region in regions:\n",
+    "#         x, y, w, h = cv2.boundingRect(region)\n",
+    "#         area = cv2.contourArea(region)\n",
+    "#         if area > 1500:\n",
+    "#             cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)\n",
+    "#             if tmp.shape[0] < pr[2]:\n",
+    "#                 tmp = np.append(tmp, [[x, y, w, h]], axis=0)\n",
+    "    \n",
+    "#     t = tmp[1:,:].astype(int)\n",
+    "#     t = np.pad(t, [(0, pr[2] - t.shape[0]),(0, 0)], mode='constant').T.reshape(1, -1)\n",
+    "#     ind = clf.predict(t).argmax(1)[0]\n",
+    "#     st = list(target_dict.keys())[list(target_dict.values()).index(ind)]\n",
+    "#     cv2.putText(fr, st, (7, 70), font, 3, (255, 0, 0), 3, cv2.LINE_AA)\n",
+    "\n",
+    "\n",
+    "\n",
+    "# CONTOURS TRAIN\n",
+    "# def text_detection(fr, img):\n",
+    "#     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)\n",
+    "#     _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)\n",
+    "#     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)\n",
+    "#     tensor = np.empty((1,4))\n",
+    "#     for contour in contours:\n",
+    "#         x, y, w, h = cv2.boundingRect(contour)\n",
+    "#         area = cv2.contourArea(contour)\n",
+    "#         if area > 100:\n",
+    "#             cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)\n",
+    "#             tensor = np.append(tensor, [[x, y, w, h]], axis=0)\n",
+    "#     if len(l2) < 2010:   \n",
+    "#         l2.append((tensor[1:,:].astype(int), 'Driver License (BACK)'))\n",
+    "#     else:\n",
+    "#         print(len(l2))\n",
+    "\n",
+    "# CONTOURS CHECK\n",
+    "def text_detection(fr, img):\n",
+    "    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)\n",
+    "    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)\n",
+    "    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)\n",
+    "    tmp = np.empty((1,4))\n",
+    "    for contour in contours:\n",
+    "        x, y, w, h = cv2.boundingRect(contour)\n",
+    "        area = cv2.contourArea(contour)\n",
+    "        if area > 100:\n",
+    "            # cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)\n",
+    "            if tmp.shape[0] < 146: # 146 pr2[2]\n",
+    "                tmp = np.append(tmp, [[x, y, w, h]], axis=0)\n",
+    "                \n",
+    "    t = tmp[1:,:].astype(int)\n",
+    "    t = np.pad(t, [(0, 146 - t.shape[0]),(0, 0)], mode='constant').T.reshape(1, -1) # 146 pr2[2]\n",
+    "    ind = clf3.predict(t).argmax(1)[0]\n",
+    "    st = list(target_dict.keys())[list(target_dict.values()).index(ind)]\n",
+    "    cv2.putText(fr, st, (7, 70), font, 3, (255, 0, 0), 3, cv2.LINE_AA)\n",
+    "\n",
+    "\n",
+    "def view(button, val1):\n",
+    "    cap = cv2.VideoCapture(0)\n",
+    "    display_handle=display(None, display_id=True)\n",
+    "\n",
+    "    while True:\n",
+    "        _, frame = cap.read()\n",
+    "        # print(frame.shape)\n",
+    "\n",
+    "        frame_masked = preprocess(frame, val1)\n",
+    "        frame_contours = contours(frame_masked, frame)\n",
+    "\n",
+    "        if frame_contours.size != 0:\n",
+    "            img_warped = get_warp(frame, frame_contours)\n",
+    "            frame_detect = text_detection(frame, img_warped)\n",
+    "        else:\n",
+    "            img_warped = frame.copy()\n",
+    "\n",
+    "        img_stack = cvzone.stackImages([\n",
+    "            frame,\n",
+    "            # frame_masked,\n",
+    "            img_warped,\n",
+    "            # frame_hsv,\n",
+    "        ], 2, 1)\n",
+    "\n",
+    "        _, frame = cv2.imencode('.jpeg', img_stack) \n",
+    "        display_handle.update(Image(data=frame.tobytes()))\n",
+    "        if stopButton.value==True:\n",
+    "            cap.release()\n",
+    "            display_handle.update(None)\n",
+    "\n",
+    "display(stopButton, val1)\n",
+    "thread = threading.Thread(target=view, args=(stopButton, val1))\n",
+    "thread.start()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "b93ea9ab-f8ad-421c-94ac-5ca9e00106ef",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 193,
+   "id": "bda2b4e2-b86d-4001-8396-b07b738e477f",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "with open('model_0.pkl', 'wb') as file:  \n",
+    "    pickle.dump(clf2, file)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 133,
+   "id": "76ab9c9e-86e3-418c-a3c7-334f72e2b754",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "l = []"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 136,
+   "id": "aeca1746-2631-44fa-a32a-bd092d0e0d32",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "500"
+      ]
+     },
+     "execution_count": 136,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "len(l[:])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 150,
+   "id": "5397147b-fea9-4631-9118-4e1164b881c6",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "2000"
+      ]
+     },
+     "execution_count": 150,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "len(l)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 149,
+   "id": "10a4d63f-4934-4b98-ada0-fe0639946a65",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "del l[1500:1510]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "6981039a-0352-4ad6-942b-6982c960a3f6",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 167,
+   "id": "3ef5409a-2c1d-4643-a5e9-1f0e69b2a70d",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "l2 = []"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 179,
+   "id": "42ba1b14-42fd-4255-9036-d00f6c8446a4",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "del l2[1500:1510]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 180,
+   "id": "d1bbbfb0-ac4b-4acb-893e-7bfb39aac076",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "2000"
+      ]
+     },
+     "execution_count": 180,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "len(l2)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "e955d9a8-d9ee-40da-8b5e-c10cc04cc2a4",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 181,
+   "id": "2e55f3c6-18eb-4102-af4c-61819c882be4",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def data_prepare(itemlist, target_dict):\n",
+    "    s = 0\n",
+    "    len_dict = len(target_dict)\n",
+    "    \n",
+    "    for i in itemlist:\n",
+    "        if s < i[0].shape[0]:\n",
+    "            s = i[0].shape[0]\n",
+    "            \n",
+    "    ret_input = np.empty((1, s * 4))\n",
+    "    ret_target = np.empty((1, len_dict))\n",
+    "    eye = np.eye(len_dict)\n",
+    "            \n",
+    "    for i in itemlist:\n",
+    "        t = np.pad(i[0], [(0, s - i[0].shape[0]),(0, 0)], mode='constant')\n",
+    "        \n",
+    "        ret_input = np.vstack((ret_input, t.T.reshape(1, -1)))\n",
+    "        ret_target = np.vstack((ret_target , eye[target_dict[i[1]]]))\n",
+    "        \n",
+    "    return ret_input[1:,:], ret_target[1:,:], s"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 152,
+   "id": "a217c8bf-f01b-4ad6-b48e-cf30825c2d1a",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "pr = data_prepare(l, target_dict)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 153,
+   "id": "2b4e17cb-3db3-43f4-b2c2-277457db6b10",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "479"
+      ]
+     },
+     "execution_count": 153,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "pr[2]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 154,
+   "id": "0f11844a-3523-4c35-9774-fcb658ce2270",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "X_train, X_test, y_train, y_test = train_test_split(pr[0], pr[1], test_size=0.2)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 155,
+   "id": "70a6f7a6-1427-4ac2-b8c5-e6ffd7183434",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "((1600, 1916), (400, 1916), (1600, 4), (400, 4))"
+      ]
+     },
+     "execution_count": 155,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "X_train.shape, X_test.shape, y_train.shape, y_test.shape"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 156,
+   "id": "f7d6f3f7-8db7-4997-b3ce-68fce404a739",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<style>#sk-container-id-3 {color: black;}#sk-container-id-3 pre{padding: 0;}#sk-container-id-3 div.sk-toggleable {background-color: white;}#sk-container-id-3 label.sk-toggleable__label {cursor: pointer;display: block;width: 100%;margin-bottom: 0;padding: 0.3em;box-sizing: border-box;text-align: center;}#sk-container-id-3 label.sk-toggleable__label-arrow:before {content: \"▸\";float: left;margin-right: 0.25em;color: #696969;}#sk-container-id-3 label.sk-toggleable__label-arrow:hover:before {color: black;}#sk-container-id-3 div.sk-estimator:hover label.sk-toggleable__label-arrow:before {color: black;}#sk-container-id-3 div.sk-toggleable__content {max-height: 0;max-width: 0;overflow: hidden;text-align: left;background-color: #f0f8ff;}#sk-container-id-3 div.sk-toggleable__content pre {margin: 0.2em;color: black;border-radius: 0.25em;background-color: #f0f8ff;}#sk-container-id-3 input.sk-toggleable__control:checked~div.sk-toggleable__content {max-height: 200px;max-width: 100%;overflow: auto;}#sk-container-id-3 input.sk-toggleable__control:checked~label.sk-toggleable__label-arrow:before {content: \"▾\";}#sk-container-id-3 div.sk-estimator input.sk-toggleable__control:checked~label.sk-toggleable__label {background-color: #d4ebff;}#sk-container-id-3 div.sk-label input.sk-toggleable__control:checked~label.sk-toggleable__label {background-color: #d4ebff;}#sk-container-id-3 input.sk-hidden--visually {border: 0;clip: rect(1px 1px 1px 1px);clip: rect(1px, 1px, 1px, 1px);height: 1px;margin: -1px;overflow: hidden;padding: 0;position: absolute;width: 1px;}#sk-container-id-3 div.sk-estimator {font-family: monospace;background-color: #f0f8ff;border: 1px dotted black;border-radius: 0.25em;box-sizing: border-box;margin-bottom: 0.5em;}#sk-container-id-3 div.sk-estimator:hover {background-color: #d4ebff;}#sk-container-id-3 div.sk-parallel-item::after {content: \"\";width: 100%;border-bottom: 1px solid gray;flex-grow: 1;}#sk-container-id-3 div.sk-label:hover label.sk-toggleable__label {background-color: #d4ebff;}#sk-container-id-3 div.sk-serial::before {content: \"\";position: absolute;border-left: 1px solid gray;box-sizing: border-box;top: 0;bottom: 0;left: 50%;z-index: 0;}#sk-container-id-3 div.sk-serial {display: flex;flex-direction: column;align-items: center;background-color: white;padding-right: 0.2em;padding-left: 0.2em;position: relative;}#sk-container-id-3 div.sk-item {position: relative;z-index: 1;}#sk-container-id-3 div.sk-parallel {display: flex;align-items: stretch;justify-content: center;background-color: white;position: relative;}#sk-container-id-3 div.sk-item::before, #sk-container-id-3 div.sk-parallel-item::before {content: \"\";position: absolute;border-left: 1px solid gray;box-sizing: border-box;top: 0;bottom: 0;left: 50%;z-index: -1;}#sk-container-id-3 div.sk-parallel-item {display: flex;flex-direction: column;z-index: 1;position: relative;background-color: white;}#sk-container-id-3 div.sk-parallel-item:first-child::after {align-self: flex-end;width: 50%;}#sk-container-id-3 div.sk-parallel-item:last-child::after {align-self: flex-start;width: 50%;}#sk-container-id-3 div.sk-parallel-item:only-child::after {width: 0;}#sk-container-id-3 div.sk-dashed-wrapped {border: 1px dashed gray;margin: 0 0.4em 0.5em 0.4em;box-sizing: border-box;padding-bottom: 0.4em;background-color: white;}#sk-container-id-3 div.sk-label label {font-family: monospace;font-weight: bold;display: inline-block;line-height: 1.2em;}#sk-container-id-3 div.sk-label-container {text-align: center;}#sk-container-id-3 div.sk-container {/* jupyter's `normalize.less` sets `[hidden] { display: none; }` but bootstrap.min.css set `[hidden] { display: none !important; }` so we also need the `!important` here to be able to override the default hidden behavior on the sphinx rendered scikit-learn.org. See: https://github.com/scikit-learn/scikit-learn/issues/21755 */display: inline-block !important;position: relative;}#sk-container-id-3 div.sk-text-repr-fallback {display: none;}</style><div id=\"sk-container-id-3\" class=\"sk-top-container\"><div class=\"sk-text-repr-fallback\"><pre>ExtraTreesClassifier(random_state=0)</pre><b>In a Jupyter environment, please rerun this cell to show the HTML representation or trust the notebook. <br />On GitHub, the HTML representation is unable to render, please try loading this page with nbviewer.org.</b></div><div class=\"sk-container\" hidden><div class=\"sk-item\"><div class=\"sk-estimator sk-toggleable\"><input class=\"sk-toggleable__control sk-hidden--visually\" id=\"sk-estimator-id-3\" type=\"checkbox\" checked><label for=\"sk-estimator-id-3\" class=\"sk-toggleable__label sk-toggleable__label-arrow\">ExtraTreesClassifier</label><div class=\"sk-toggleable__content\"><pre>ExtraTreesClassifier(random_state=0)</pre></div></div></div></div></div>"
+      ],
+      "text/plain": [
+       "ExtraTreesClassifier(random_state=0)"
+      ]
+     },
+     "execution_count": 156,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "from sklearn.ensemble import ExtraTreesClassifier\n",
+    "from sklearn.metrics import accuracy_score\n",
+    "\n",
+    "clf = ExtraTreesClassifier(n_estimators=100, random_state=0)\n",
+    "clf.fit(X_train, y_train)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 157,
+   "id": "e391e506-54e8-4488-b883-170bf5ff36b8",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "(1.0, 1.0)"
+      ]
+     },
+     "execution_count": 157,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "accuracy_score(y_train, clf.predict(X_train)), accuracy_score(y_test, clf.predict(X_test))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 158,
+   "id": "59e9e3b0-056b-400c-ab98-5dfcd9058cfa",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "(1916,)"
+      ]
+     },
+     "execution_count": 158,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "X_test[0].shape"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "929d8903-2b93-4845-8b05-fb188bdaf4ce",
+   "metadata": {},
+   "source": [
+    "## ----------------------"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 182,
+   "id": "bc5ea00b-5359-42e3-9a99-a56a36b4073c",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "pr2 = data_prepare(l2, target_dict)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 183,
+   "id": "9e034295-9e02-44d9-9c25-18cd1502ec6b",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "X_train, X_test, y_train, y_test = train_test_split(pr2[0], pr2[1], test_size=0.2)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 184,
+   "id": "0e49d818-aae8-47ae-9375-c8ef703ef854",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<style>#sk-container-id-4 {color: black;}#sk-container-id-4 pre{padding: 0;}#sk-container-id-4 div.sk-toggleable {background-color: white;}#sk-container-id-4 label.sk-toggleable__label {cursor: pointer;display: block;width: 100%;margin-bottom: 0;padding: 0.3em;box-sizing: border-box;text-align: center;}#sk-container-id-4 label.sk-toggleable__label-arrow:before {content: \"▸\";float: left;margin-right: 0.25em;color: #696969;}#sk-container-id-4 label.sk-toggleable__label-arrow:hover:before {color: black;}#sk-container-id-4 div.sk-estimator:hover label.sk-toggleable__label-arrow:before {color: black;}#sk-container-id-4 div.sk-toggleable__content {max-height: 0;max-width: 0;overflow: hidden;text-align: left;background-color: #f0f8ff;}#sk-container-id-4 div.sk-toggleable__content pre {margin: 0.2em;color: black;border-radius: 0.25em;background-color: #f0f8ff;}#sk-container-id-4 input.sk-toggleable__control:checked~div.sk-toggleable__content {max-height: 200px;max-width: 100%;overflow: auto;}#sk-container-id-4 input.sk-toggleable__control:checked~label.sk-toggleable__label-arrow:before {content: \"▾\";}#sk-container-id-4 div.sk-estimator input.sk-toggleable__control:checked~label.sk-toggleable__label {background-color: #d4ebff;}#sk-container-id-4 div.sk-label input.sk-toggleable__control:checked~label.sk-toggleable__label {background-color: #d4ebff;}#sk-container-id-4 input.sk-hidden--visually {border: 0;clip: rect(1px 1px 1px 1px);clip: rect(1px, 1px, 1px, 1px);height: 1px;margin: -1px;overflow: hidden;padding: 0;position: absolute;width: 1px;}#sk-container-id-4 div.sk-estimator {font-family: monospace;background-color: #f0f8ff;border: 1px dotted black;border-radius: 0.25em;box-sizing: border-box;margin-bottom: 0.5em;}#sk-container-id-4 div.sk-estimator:hover {background-color: #d4ebff;}#sk-container-id-4 div.sk-parallel-item::after {content: \"\";width: 100%;border-bottom: 1px solid gray;flex-grow: 1;}#sk-container-id-4 div.sk-label:hover label.sk-toggleable__label {background-color: #d4ebff;}#sk-container-id-4 div.sk-serial::before {content: \"\";position: absolute;border-left: 1px solid gray;box-sizing: border-box;top: 0;bottom: 0;left: 50%;z-index: 0;}#sk-container-id-4 div.sk-serial {display: flex;flex-direction: column;align-items: center;background-color: white;padding-right: 0.2em;padding-left: 0.2em;position: relative;}#sk-container-id-4 div.sk-item {position: relative;z-index: 1;}#sk-container-id-4 div.sk-parallel {display: flex;align-items: stretch;justify-content: center;background-color: white;position: relative;}#sk-container-id-4 div.sk-item::before, #sk-container-id-4 div.sk-parallel-item::before {content: \"\";position: absolute;border-left: 1px solid gray;box-sizing: border-box;top: 0;bottom: 0;left: 50%;z-index: -1;}#sk-container-id-4 div.sk-parallel-item {display: flex;flex-direction: column;z-index: 1;position: relative;background-color: white;}#sk-container-id-4 div.sk-parallel-item:first-child::after {align-self: flex-end;width: 50%;}#sk-container-id-4 div.sk-parallel-item:last-child::after {align-self: flex-start;width: 50%;}#sk-container-id-4 div.sk-parallel-item:only-child::after {width: 0;}#sk-container-id-4 div.sk-dashed-wrapped {border: 1px dashed gray;margin: 0 0.4em 0.5em 0.4em;box-sizing: border-box;padding-bottom: 0.4em;background-color: white;}#sk-container-id-4 div.sk-label label {font-family: monospace;font-weight: bold;display: inline-block;line-height: 1.2em;}#sk-container-id-4 div.sk-label-container {text-align: center;}#sk-container-id-4 div.sk-container {/* jupyter's `normalize.less` sets `[hidden] { display: none; }` but bootstrap.min.css set `[hidden] { display: none !important; }` so we also need the `!important` here to be able to override the default hidden behavior on the sphinx rendered scikit-learn.org. See: https://github.com/scikit-learn/scikit-learn/issues/21755 */display: inline-block !important;position: relative;}#sk-container-id-4 div.sk-text-repr-fallback {display: none;}</style><div id=\"sk-container-id-4\" class=\"sk-top-container\"><div class=\"sk-text-repr-fallback\"><pre>ExtraTreesClassifier(random_state=0)</pre><b>In a Jupyter environment, please rerun this cell to show the HTML representation or trust the notebook. <br />On GitHub, the HTML representation is unable to render, please try loading this page with nbviewer.org.</b></div><div class=\"sk-container\" hidden><div class=\"sk-item\"><div class=\"sk-estimator sk-toggleable\"><input class=\"sk-toggleable__control sk-hidden--visually\" id=\"sk-estimator-id-4\" type=\"checkbox\" checked><label for=\"sk-estimator-id-4\" class=\"sk-toggleable__label sk-toggleable__label-arrow\">ExtraTreesClassifier</label><div class=\"sk-toggleable__content\"><pre>ExtraTreesClassifier(random_state=0)</pre></div></div></div></div></div>"
+      ],
+      "text/plain": [
+       "ExtraTreesClassifier(random_state=0)"
+      ]
+     },
+     "execution_count": 184,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "clf2 = ExtraTreesClassifier(n_estimators=100, random_state=0)\n",
+    "clf2.fit(X_train, y_train)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 185,
+   "id": "58a5ebaf-ffe3-443f-a4a1-73af789c579c",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "(1.0, 1.0)"
+      ]
+     },
+     "execution_count": 185,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "accuracy_score(y_train, clf2.predict(X_train)), accuracy_score(y_test, clf2.predict(X_test))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 191,
+   "id": "535012a6-64aa-4852-b140-8ef484d11ce9",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "146"
+      ]
+     },
+     "execution_count": 191,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "pr2[2]"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3 (ipykernel)",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.11.3"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
